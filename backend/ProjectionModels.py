@@ -23,9 +23,9 @@ class ProjectionModels:
         self.t_features = ['efg_pct', 'tov', 'drb', 'orb', 'ft_pct', 'pts', 'ast',
                            'minutes', 'ts_pct', 'stl', 'blk', 'fga']
         # Default columns to be predicted by models
-        self.p_features = ['pts', 'ast', 'drb', 'orb', 'stl', 'blk', 'tov', 'fga', 'minutes']
+        self.feature_model = ['pts', 'ast', 'drb', 'orb', 'stl', 'blk', 'tov', 'fga', 'minutes']
 
-        self.p_features_data = self.raw_data[self.p_features]
+        self.features_model_data = self.raw_data[self.feature_model]
 
         self.le = LabelEncoder()
         self.oh = OneHotEncoder(sparse=False)
@@ -35,7 +35,7 @@ class ProjectionModels:
             self.serialize()
         else:
             self.models = {}
-            for feature in self.p_features:
+            for feature in self.feature_model:
                 self.models[feature] = joblib.load(f"models/{feature}.mdl")
 
     def serialize(self):
@@ -63,30 +63,31 @@ class ProjectionModels:
 
     def train_models(self):
         models = {}
-        for feature in self.p_features:
+        for feature in self.feature_model:
             print(f"\n================ {feature}")
             start = time.time()
 
-            X, y = self.p_features_data.drop(feature, axis=1), self.p_features_data[[feature]]
+            X, y = self.features_model_data.drop(feature, axis=1), self.features_model_data[[feature]]
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
-            r_score = {}
-            for k in range(1, 10):
-                k_value = k + 1
-
-                knn = KNeighborsRegressor(n_neighbors=k_value)
-                knn.fit(X, y)
-                y_pred = knn.predict(X_test)
-                r2 = r2_score(y_test, y_pred)
-                if r2 != 1:
-                    r_score[k_value] = r2_score(y_test, y_pred)
-            k = max(r_score, key=lambda x: r_score[x])
-
-            end = time.time()
-            print(f"\nTrained {feature} model in {end - start}s")
-
-            print(f"\nk value for max R2: {k}")
-            model = KNeighborsRegressor(n_neighbors=k)
+            # r_score = {}
+            # for k in range(1, 10):
+            #     k_value = k + 1
+            #
+            #     knn = KNeighborsRegressor(n_neighbors=k_value)
+            #     knn.fit(X, y)
+            #     y_pred = knn.predict(X_test)
+            #     r2 = r2_score(y_test, y_pred)
+            #     if r2 != 1:
+            #         r_score[k_value] = r2_score(y_test, y_pred)
+            #
+            # k = max(r_score, key=lambda x: r_score[x])
+            # end = time.time()
+            #
+            # print(f"\nTrained {feature} model in {end - start}s")
+            #
+            # print(f"\nk value for max R2: {k}")
+            model = KNeighborsRegressor(n_neighbors=2)
             model.fit(X, y)
             models[feature] = model
 
@@ -111,7 +112,7 @@ class ProjectionModels:
 
         current_team = recent_games['TEAM_NAME'].iloc[0]
         recent_games = recent_games[['PTS', 'AST', 'DREB', 'OREB', 'STL', 'BLK', 'TOV', 'FGA', 'MIN']]
-        recent_games.columns = self.p_features
+        recent_games.columns = self.feature_model
         performance = recent_games.mean().to_frame().transpose()
 
         projections = {}

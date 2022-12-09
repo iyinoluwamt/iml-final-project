@@ -60,3 +60,4 @@ api.add_resource(ProjectionPlayer, '/api/project/player')
 api.add_resource(ProjectionTeam, '/api/project/team')
 api.add_resource(ComparePlayerProjection, '/api/compare/player')
 app.run(port=PORT, debug=True)
+
