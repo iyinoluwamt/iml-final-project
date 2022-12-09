@@ -1,5 +1,11 @@
+import math
 import os
 import time
+
+import pandas as pd
+import requests
+from nba_api.stats.endpoints import playergamelogs
+from nba_api.stats.static import players as play
 
 import joblib as joblib
 from sklearn import metrics
@@ -12,13 +18,14 @@ from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 class ProjectionModels:
     def __init__(self, data):
         self.raw_data = data
+        self.player_IDs = self.get_player_ids()
         # Default columns used for model training
         self.t_features = ['efg_pct', 'tov', 'drb', 'orb', 'ft_pct', 'pts', 'ast',
                            'minutes', 'ts_pct', 'stl', 'blk', 'fga']
         # Default columns to be predicted by models
         self.p_features = ['pts', 'ast', 'drb', 'orb', 'stl', 'blk', 'tov', 'fga', 'minutes']
 
-        self.t_features_data = self.raw_data[self.t_features]
+        self.p_features_data = self.raw_data[self.p_features]
 
         self.le = LabelEncoder()
         self.oh = OneHotEncoder(sparse=False)
@@ -35,6 +42,18 @@ class ProjectionModels:
         for mdl in self.models:
             joblib.dump(self.models[mdl], f"models/{mdl}.mdl")
 
+    def get_player_ids(self):
+
+        data = play.get_players()
+        players = {}
+        for i in data:
+            players[i['full_name']] = i['id']
+        return players
+
+    def lookup_player(self, player, n_recent_games=5):
+        logs = playergamelogs.PlayerGameLogs(last_n_games_nullable=n_recent_games,
+                                             player_id_nullable=self.player_IDs[player])
+
     def retrain_models(self):
         dir = 'models'
         for f in os.listdir(dir):
@@ -48,7 +67,7 @@ class ProjectionModels:
             print(f"\n================ {feature}")
             start = time.time()
 
-            X, y = self.t_features_data.drop(feature, axis=1), self.t_features_data[[feature]]
+            X, y = self.p_features_data.drop(feature, axis=1), self.p_features_data[[feature]]
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
             r_score = {}
@@ -77,36 +96,49 @@ class ProjectionModels:
         return models
 
     def get_player_projection(self, player, n_recent_games=5):
-        raw_player_data = self.raw_data[self.raw_data.player == player]
-        copy_player_data = raw_player_data.copy()
 
-        recent_games = []
-        for i in range(n_recent_games):
-            most_recent_game_date = copy_player_data['game_date'].max()  # gets players most recent game
-            if most_recent_game_date != most_recent_game_date:  # nan check
-                break
-            recent_games.append(most_recent_game_date)
-            copy_player_data = copy_player_data[copy_player_data.game_date != most_recent_game_date]
+        try:
+            recent_games = playergamelogs.PlayerGameLogs(
+                player_id_nullable=self.player_IDs[player],
+                last_n_games_nullable=n_recent_games,
+                season_nullable='2022-23'
+            ).get_data_frames()[0]
+        except KeyError:
+            return False
 
-        recent_player_stats = raw_player_data[raw_player_data.game_date.isin(recent_games)][self.t_features]
-        mean_player_stats = recent_player_stats.mean().to_frame().transpose()
+        if recent_games.empty:
+            return False
+
+        current_team = recent_games['TEAM_NAME'].iloc[0]
+        recent_games = recent_games[['PTS', 'AST', 'DREB', 'OREB', 'STL', 'BLK', 'TOV', 'FGA', 'MIN']]
+        recent_games.columns = self.p_features
+        performance = recent_games.mean().to_frame().transpose()
 
         projections = {}
         for model in self.models:
             knn = self.models[model]
-            projections[model] = knn.predict(mean_player_stats.drop(model, axis=1))[0][0]
-        return mean_player_stats[self.p_features].iloc[0].to_dict(), projections
+            projections[model] = math.ceil(knn.predict(performance.drop(model, axis=1))[0][0])
+        performance = performance.iloc[0].to_dict()
+
+        projections['player'], performance['player'] = player, player
+        projections['team'], performance['team'] = current_team, current_team
+        return performance, projections
 
     def get_team_projection(self, abbrev, n_recent_games=5):
         team_data = self.raw_data[self.raw_data.Team_Abbrev == abbrev]
         most_recent_date = team_data['game_date'].max()
         most_recent_team = set(team_data[team_data.game_date == most_recent_date]['player'].tolist())
 
-        team_projections = {}
-        team_performance = {}
+        team_projections, team_performance = {'players': {}}, {'players': {}}
         for player in most_recent_team:
-            performance, projections = self.get_player_projection(player, n_recent_games)
+            res = self.get_player_projection(player, n_recent_games)
 
+            if not res:
+                continue
+            performance, projections = res
+
+            team_performance['players'][player] = performance
+            team_projections['players'][player] = projections
             for stat in projections:
                 try:
                     team_projections[stat] += projections[stat]
@@ -126,4 +158,27 @@ class ProjectionModels:
         A_perf, A_proj = self.get_player_projection(player_A, n_recent_games)
         B_perf, B_proj = self.get_player_projection(player_B, n_recent_games)
 
-        return (A_perf, A_proj), (B_perf, B_proj)
+        if not A_perf and A_proj and B_perf and B_proj:
+            return False
+
+        comparison = {
+            'A': {
+                'player': player_A,
+                'performance': A_perf,
+                'projection': A_proj,
+            },
+            'B': {
+                'player': player_B,
+                'performance': B_perf,
+                'projection': B_proj
+            }
+        }
+
+        comp = {
+            'player_A': player_A,
+            'player_B': player_B,
+            'A': A_proj,
+            'B': B_proj
+        }
+
+        return comp
